@@ -7,25 +7,24 @@
 #include "syscall.h"
 #include <string.h>
 
-extern uint64_t __htif_base;
-volatile uint64_t tohost __attribute__((section(".htif")));
-volatile uint64_t fromhost __attribute__((section(".htif")));
-volatile int htif_console_buf;
-static spinlock_t htif_lock = SPINLOCK_INIT;
+volatile uint64_t *tohost;
+volatile uint64_t *fromhost;
+volatile int htif_console_buf = 0;
 uintptr_t htif;
+static spinlock_t htif_lock = SPINLOCK_INIT;
+
+#define TOHOST_OFFSET		(0)
+#define FROMHOST_OFFSET		(8)
 
 #define TOHOST(base_int)	(uint64_t *)(base_int + TOHOST_OFFSET)
 #define FROMHOST(base_int)	(uint64_t *)(base_int + FROMHOST_OFFSET)
 
-#define TOHOST_OFFSET		((uintptr_t)tohost - (uintptr_t)__htif_base)
-#define FROMHOST_OFFSET		((uintptr_t)fromhost - (uintptr_t)__htif_base)
-
 static void __check_fromhost()
 {
-  uint64_t fh = fromhost;
+  uint64_t fh = *fromhost;
   if (!fh)
     return;
-  fromhost = 0;
+  *fromhost = 0;
 
   // this should be from the console
   assert(FROMHOST_DEV(fh) == 1);
@@ -42,9 +41,9 @@ static void __check_fromhost()
 
 static void __set_tohost(uintptr_t dev, uintptr_t cmd, uintptr_t data)
 {
-  while (tohost)
+  while (*tohost)
     __check_fromhost();
-  tohost = TOHOST_CMD(dev, cmd, data);
+  *tohost = TOHOST_CMD(dev, cmd, data);
 }
 
 int htif_console_getchar()
@@ -72,10 +71,10 @@ static void do_tohost_fromhost(uintptr_t dev, uintptr_t cmd, uintptr_t data)
     __set_tohost(dev, cmd, data);
 
     while (1) {
-      uint64_t fh = fromhost;
+      uint64_t fh = *fromhost;
       if (fh) {
         if (FROMHOST_DEV(fh) == dev && FROMHOST_CMD(fh) == cmd) {
-          fromhost = 0;
+          *fromhost = 0;
           break;
         }
         __check_fromhost();
@@ -109,14 +108,15 @@ void htif_console_putchar(uint8_t ch)
 void htif_poweroff()
 {
   while (1) {
-    fromhost = 0;
-    tohost = 1;
+    *fromhost = 0;
+    *tohost = 1;
   }
 }
 
 struct htif_scan
 {
   int compat;
+  uint64_t reg;
 };
 
 static void htif_open(const struct fdt_scan_node *node, void *extra)
@@ -130,15 +130,19 @@ static void htif_prop(const struct fdt_scan_prop *prop, void *extra)
   struct htif_scan *scan = (struct htif_scan *)extra;
   if (!strcmp(prop->name, "compatible") && fdt_string_list_index(prop, "ucb,htif0") >= 0) {
     scan->compat = 1;
+  } else if (!strcmp(prop->name, "reg")) {
+    fdt_get_address(prop->node->parent, prop->value, &scan->reg);
   }
 }
 
 static void htif_done(const struct fdt_scan_node *node, void *extra)
 {
   struct htif_scan *scan = (struct htif_scan *)extra;
-  if (!scan->compat) return;
+  if (!scan->compat || !scan->reg) return;
 
   htif = 1;
+  fromhost = FROMHOST((uintptr_t)scan->reg);
+  tohost = TOHOST((uintptr_t)scan->reg);
 }
 
 void query_htif(uintptr_t fdt)
