@@ -239,7 +239,7 @@ void trap_from_machine_mode(uintptr_t* regs, uintptr_t dummy, uintptr_t mepc)
 
 void poweroff(uint16_t code)
 {
-  printm("Power off\r\n");
+  /* printm("Power off\r\n"); */
   finisher_exit(code);
   if (htif) {
     htif_poweroff();
