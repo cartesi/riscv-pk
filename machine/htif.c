@@ -9,7 +9,6 @@
 
 volatile uint64_t *tohost;
 volatile uint64_t *fromhost;
-volatile int htif_console_buf = 0;
 uintptr_t htif;
 static spinlock_t htif_lock = SPINLOCK_INIT;
 
@@ -19,98 +18,46 @@ static spinlock_t htif_lock = SPINLOCK_INIT;
 #define TOHOST(base_int)	(uint64_t *)(base_int + TOHOST_OFFSET)
 #define FROMHOST(base_int)	(uint64_t *)(base_int + FROMHOST_OFFSET)
 
-static void __check_fromhost()
-{
-  uint64_t fh = *fromhost;
-  if (!fh)
-    return;
-  *fromhost = 0;
-
-  // this should be from the console
-  assert(FROMHOST_DEV(fh) == 1);
-  switch (FROMHOST_CMD(fh)) {
-    case 0:
-      htif_console_buf = 1 + (uint8_t)FROMHOST_DATA(fh);
-      break;
-    case 1:
-      break;
-    default:
-      assert(0);
-  }
-}
-
-static void __set_tohost(uintptr_t dev, uintptr_t cmd, uintptr_t data)
-{
-  while (*tohost)
-    __check_fromhost();
-  *tohost = TOHOST_CMD(dev, cmd, data);
-}
-
 int htif_console_getchar()
 {
-#if __riscv_xlen == 32
-  // HTIF devices are not supported on RV32
-  return -1;
-#endif
-
   spinlock_lock(&htif_lock);
-    __check_fromhost();
-    int ch = htif_console_buf;
-    if (ch >= 0) {
-      htif_console_buf = -1;
-      __set_tohost(1, 0, 0);
-    }
+  *fromhost = 0;
+  *tohost = TOHOST_DEV_CMD_DATA(1, 0, 0);
+  uint64_t ack = *fromhost;
   spinlock_unlock(&htif_lock);
-
-  return ch - 1;
-}
-
-static void do_tohost_fromhost(uintptr_t dev, uintptr_t cmd, uintptr_t data)
-{
-  spinlock_lock(&htif_lock);
-    __set_tohost(dev, cmd, data);
-
-    while (1) {
-      uint64_t fh = *fromhost;
-      if (fh) {
-        if (FROMHOST_DEV(fh) == dev && FROMHOST_CMD(fh) == cmd) {
-          *fromhost = 0;
-          break;
-        }
-        __check_fromhost();
-      }
-    }
-  spinlock_unlock(&htif_lock);
-}
-
-void htif_syscall(uintptr_t arg)
-{
-  do_tohost_fromhost(0, 0, arg);
+  return (int)(FROMHOST_DATA(ack))-1;
 }
 
 void htif_console_putchar(uint8_t ch)
 {
-#if __riscv_xlen == 32
-  // HTIF devices are not supported on RV32, so proxy a write system call
-  volatile uint64_t magic_mem[8];
-  magic_mem[0] = SYS_write;
-  magic_mem[1] = 1;
-  magic_mem[2] = (uintptr_t)&ch;
-  magic_mem[3] = 1;
-  do_tohost_fromhost(0, 0, (uintptr_t)magic_mem);
-#else
   spinlock_lock(&htif_lock);
-    __set_tohost(1, 1, ch);
+  *fromhost = 0;
+  *tohost = TOHOST_DEV_CMD_DATA(1, 1, ch);
+  uint64_t ack = *fromhost;
+  (void) ack; /* no need for info in ack */
   spinlock_unlock(&htif_lock);
-#endif
 }
 
-void htif_poweroff()
+void htif_poweroff(void)
 {
   while (1) {
+    spinlock_lock(&htif_lock);
     *fromhost = 0;
-    *tohost = 1;
+    *tohost = TOHOST_DEV_CMD_DATA(0, 0, 1); /* does not return */
+    uint64_t ack = *fromhost;
+    (void) ack;
+    spinlock_unlock(&htif_lock);
   }
+}
+
+uint64_t htif_yield(uint64_t cmd_data)
+{
+  spinlock_lock(&htif_lock);
+  *fromhost = 0;
+  *tohost = TOHOST_DEV(2) | TOHOST_CMD_DATA(cmd_data);
+  uint64_t ack = *fromhost;
+  spinlock_unlock(&htif_lock);
+  return ack;
 }
 
 struct htif_scan

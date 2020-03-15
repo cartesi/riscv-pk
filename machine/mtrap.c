@@ -63,6 +63,11 @@ static void send_ipi(uintptr_t recipient, int event)
   *OTHER_HLS(recipient)->ipi = 1;
 }
 
+static uint64_t mcall_yield(uint64_t cmd_data)
+{
+    return htif_yield(cmd_data);
+}
+
 static uintptr_t mcall_console_getchar()
 {
   if (uart) {
@@ -156,6 +161,9 @@ send_ipi:
       break;
     case SBI_SHUTDOWN:
       retval = mcall_shutdown();
+      break;
+    case SBI_YIELD:
+      retval = mcall_yield(arg0);
       break;
     case SBI_SET_TIMER:
 #if __riscv_xlen == 32
